@@ -46,6 +46,10 @@ input,select{font:inherit;width:100%;padding:10px;border:1px solid var(--bd);bor
 .err{color:var(--dn)}
 label{font-size:12px;color:var(--mu);display:block;margin:0 0 3px}
 .f{margin-bottom:10px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.chips button{padding:6px 12px;border-radius:999px;font-size:14px}
+.amt{display:flex;gap:6px}.amt input{min-width:0}
+.amt button{flex:none;padding:0 15px;font-weight:700;font-size:18px}
 </style>
 </head>
 <body>
@@ -62,8 +66,9 @@ label{font-size:12px;color:var(--mu);display:block;margin:0 0 3px}
 
   <div class="card">
     <h2 id="ftitle">Add expense</h2>
+    <div class="chips" id="chips" style="display:none"></div>
     <div class="grid">
-      <div><label>Amount (e.g. 6+4.5)</label><input id="amt" autocomplete="off" inputmode="decimal"></div>
+      <div><label id="lblamt">Amount (e.g. 6+4.5)</label><div class="amt"><input id="amt" autocomplete="off" inputmode="decimal"><button type="button" id="plus" aria-label="Add another amount">+</button></div></div>
       <div><label>Date</label><input id="date" type="date"></div>
       <div><label>Note (optional)</label><input id="note" list="notes" autocomplete="off"><datalist id="notes"></datalist></div>
       <div><label>Category</label><select id="cat"></select></div>
@@ -82,20 +87,24 @@ label{font-size:12px;color:var(--mu);display:block;margin:0 0 3px}
     <div class="f"><label>Currency label</label><input id="cur" maxlength="5"></div>
     <div class="row"><button class="p" id="ssave">Save &amp; sync</button><button id="sreset">Re-download all</button></div>
     <div class="msg" id="smsg"></div>
-    <div class="msg">Expense Tracker phone v2.1.0. Entries are saved on this phone first, then synced.</div>
+    <div class="msg">Expense Tracker phone v2.2.0. Entries are saved on this phone first, then synced.</div>
   </details>
 </main>
 <script>
 (function () {
-var VER = '2.1.0', K = 'expense-phone-v1';
+var VER = '2.2.0', K = 'expense-phone-v1';
 var CATS = ['Food', 'Transport', 'Shopping', 'Family', 'Phone', 'Bills', 'Health', 'Other'];
 var S = { url: '', token: '', cur: 'RM', rows: [], seq: 0, lastPush: '', lastSync: '' };
 var $ = function (s) { return document.querySelector(s); };
 function pad(n) { return (n < 10 ? '0' : '') + n; }
 function localDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
 var todayS = localDate(new Date()), ym = todayS.slice(0, 7);
-var editUid = null, pend = null, touched = false, syncing = false, lastTry = 0;
+var editUid = null, pend = null, touched = false, syncing = false, lastTry = 0, queued = false, chipList = [];
 
+function stampAfter(old, n) {
+  if (old && n <= old) { var t = Date.parse(old); if (!isNaN(t)) n = new Date(t + 1000).toISOString().slice(0, 19) + 'Z'; }
+  return n;
+}
 function nowIso() { return new Date().toISOString().slice(0, 19) + 'Z'; }
 function genUid() {
   var a = new Uint8Array(16);
@@ -159,6 +168,24 @@ function render() {
   });
   $('#list').innerHTML = h || '<div class="msg">Nothing here yet.</div>';
 
+  var cnt = Object.create(null);
+  all.forEach(function (r) {
+    if (!r.note) return;
+    var k = r.note.toLowerCase(), c = cnt[k];
+    if (!c) c = cnt[k] = { n: 0, last: r };
+    c.n++;
+    if (r.date > c.last.date || (r.date === c.last.date && r.updated_at >= c.last.updated_at)) c.last = r;
+  });
+  chipList = Object.keys(cnt).filter(function (k) { return cnt[k].n >= 2; }).sort(function (a, b) {
+    return (cnt[b].n - cnt[a].n) || (cnt[a].last.date < cnt[b].last.date ? 1 : (cnt[a].last.date > cnt[b].last.date ? -1 : 0));
+  }).slice(0, 6).map(function (k) { return cnt[k].last; });
+  var cb = $('#chips');
+  cb.style.display = chipList.length ? '' : 'none';
+  cb.innerHTML = chipList.map(function (r, i) {
+    var n = r.note.length > 14 ? r.note.slice(0, 13) + '\u2026' : r.note;
+    return '<button type="button" data-chip="' + i + '">' + esc(n) + ' ' + plain(r.amount_cents) + '</button>';
+  }).join('');
+
   var seen = {}, notes = [];
   all.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).forEach(function (r) {
     if (r.note && !seen[r.note] && notes.length < 40) { seen[r.note] = 1; notes.push(r.note); }
@@ -166,6 +193,19 @@ function render() {
   $('#notes').innerHTML = notes.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('');
 }
 
+function calc() {
+  var t = $('#amt').value, c = t.indexOf('+') >= 0 ? parseAmt(t) : null;
+  $('#lblamt').textContent = c ? 'Amount  =  ' + money(c) : 'Amount (e.g. 6+4.5)';
+}
+function useChip(i) {
+  var r = chipList[i];
+  if (!r) return;
+  if (editUid) { setMsg('Finish or cancel the edit first.', true); return; }
+  $('#note').value = r.note; $('#cat').value = CATS.indexOf(r.category) >= 0 ? r.category : 'Other'; touched = true;
+  $('#amt').value = plain(r.amount_cents); calc();
+  $('#amt').focus(); try { $('#amt').select(); } catch (e) {}
+  setMsg('Filled from your last one. Change the amount if needed, then tap Add.');
+}
 function autofill() {
   var n = $('#note').value.trim().toLowerCase();
   if (editUid || touched || !n) return;
@@ -177,7 +217,7 @@ function autofill() {
 }
 function resetForm() {
   editUid = null; touched = false;
-  $('#amt').value = ''; $('#note').value = ''; $('#cat').value = CATS[0]; $('#date').value = todayS;
+  $('#amt').value = ''; $('#note').value = ''; $('#cat').value = CATS[0]; $('#date').value = todayS; calc();
   $('#save').textContent = 'Add'; $('#cancel').style.display = 'none'; $('#ftitle').textContent = 'Add expense';
 }
 function submit() {
@@ -188,13 +228,13 @@ function submit() {
   var cat = $('#cat').value, note = $('#note').value.trim().slice(0, 200), now = nowIso();
   if (editUid) {
     var r = find(editUid);
-    if (r) { r.date = d; r.amount_cents = a; r.category = cat; r.note = note; r.updated_at = now; }
+    if (r) { r.date = d; r.amount_cents = a; r.category = cat; r.note = note; r.updated_at = stampAfter(r.updated_at, now); }
     setMsg('Updated.');
   } else {
     S.rows.push({ uid: genUid(), date: d, amount_cents: a, category: cat, note: note, updated_at: now, deleted: 0 });
     setMsg('Added ' + money(a) + ' (' + cat + ').');
   }
-  save(); ym = d.slice(0, 7); resetForm(); render(); sync(true);
+  save(); ym = d.slice(0, 7); resetForm(); render(); syncSoon();
 }
 
 function post(payload) {
@@ -203,6 +243,7 @@ function post(payload) {
   return fetch(S.url, { method: 'POST', body: JSON.stringify(payload), signal: ctl ? ctl.signal : undefined })
     .then(function (r) { if (timer) clearTimeout(timer); return r.json(); });
 }
+function syncSoon() { if (syncing) queued = true; else sync(true); }
 function sync(silent, again) {
   if (syncing) return Promise.resolve();
   if (!configured()) { if (!silent) { $('#set').open = true; setSMsg('Enter the sync link and password first.', true); } setStatus('Sync not set up'); return Promise.resolve(); }
@@ -227,8 +268,9 @@ function sync(silent, again) {
     setStatus('Synced ' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + (added || upd ? ' (+' + added + ' new, ' + upd + ' changed)' : ''));
     setSMsg(resp.rejected ? resp.rejected + ' entries could not be uploaded.' : 'Synced.', !!resp.rejected);
     syncing = false; render();
+    if (queued) { queued = false; setTimeout(function () { sync(true); }, 200); }
   }).catch(function (e) {
-    syncing = false;
+    syncing = false; queued = false;
     var m = e && e.name === 'AbortError' ? 'Took too long' : (e && e.message) || 'Offline';
     if (/Failed to fetch|NetworkError|Load failed|fetch/i.test(m)) m = 'Offline: saved on this phone, will sync later';
     setStatus(m, true); setSMsg(m, true);
@@ -243,6 +285,13 @@ function boot() {
   $('#save').onclick = submit;
   $('#cancel').onclick = function () { resetForm(); setMsg(''); };
   $('#amt').onkeydown = function (e) { if (e.key === 'Enter') submit(); };
+  $('#amt').oninput = calc;
+  $('#plus').onmousedown = function (e) { e.preventDefault(); };
+  $('#plus').onclick = function () {
+    var a = $('#amt'), v = a.value.trim();
+    if (v && v.slice(-1) !== '+') a.value = v + '+';
+    a.focus(); calc();
+  };
   $('#note').onchange = autofill; $('#note').onblur = autofill;
   $('#cat').onchange = function () { touched = true; };
   $('#syncbtn').onclick = function () { sync(false); };
@@ -255,21 +304,23 @@ function boot() {
   };
   $('#sreset').onclick = function () { S.seq = 0; S.lastPush = ''; save(); sync(false); };
   document.addEventListener('click', function (e) {
-    var t = e.target.closest ? e.target.closest('[data-del],[data-edit]') : null;
+    var t = e.target.closest ? e.target.closest('[data-del],[data-edit],[data-chip]') : null;
     if (!t) return;
+    if (t.dataset.chip !== undefined) { useChip(+t.dataset.chip); return; }
     if (t.dataset.del) {
       var r = find(t.dataset.del);
-      if (pend === t.dataset.del) { if (r) { r.deleted = 1; r.updated_at = nowIso(); } pend = null; save(); render(); sync(true); }
+      if (pend === t.dataset.del) { if (r) { r.deleted = 1; r.updated_at = stampAfter(r.updated_at, nowIso()); } pend = null; save(); render(); syncSoon(); }
       else { pend = t.dataset.del; render(); }
     } else {
       var x = find(t.dataset.edit); if (!x) return;
-      editUid = x.uid; $('#amt').value = plain(x.amount_cents); $('#date').value = x.date; $('#note').value = x.note; $('#cat').value = x.category;
+      editUid = x.uid; $('#amt').value = plain(x.amount_cents); calc(); $('#date').value = x.date; $('#note').value = x.note; $('#cat').value = x.category;
       $('#save').textContent = 'Save changes'; $('#cancel').style.display = ''; $('#ftitle').textContent = 'Edit expense';
       setMsg('Editing. Change anything and save.'); window.scrollTo(0, 0);
     }
   });
   document.addEventListener('visibilitychange', function () { if (!document.hidden && configured() && Date.now() - lastTry > 60000) sync(true); });
   window.addEventListener('online', function () { if (configured()) sync(true); });
+  setInterval(function () { if (!document.hidden && configured() && !syncing) sync(true); }, 120000);
   function shift(n) { var p = ym.split('-'), d = new Date(+p[0], +p[1] - 1 + n, 1); ym = d.getFullYear() + '-' + pad(d.getMonth() + 1); pend = null; render(); }
   setStatus(configured() ? (S.lastSync ? 'Last sync ' + new Date(S.lastSync).toLocaleString() : 'Not synced yet') : 'Sync not set up');
   render();

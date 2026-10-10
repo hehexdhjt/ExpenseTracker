@@ -46,8 +46,6 @@ input,select{font:inherit;width:100%;padding:10px;border:1px solid var(--bd);bor
 .err{color:var(--dn)}
 label{font-size:12px;color:var(--mu);display:block;margin:0 0 3px}
 .f{margin-bottom:10px}
-.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-.chips button{padding:6px 12px;border-radius:999px;font-size:14px}
 .amt{display:flex;gap:6px}.amt input{min-width:0}
 .amt button{flex:none;padding:0 15px;font-weight:700;font-size:18px}
 </style>
@@ -66,7 +64,6 @@ label{font-size:12px;color:var(--mu);display:block;margin:0 0 3px}
 
   <div class="card">
     <h2 id="ftitle">Add expense</h2>
-    <div class="chips" id="chips" style="display:none"></div>
     <div class="grid">
       <div><label id="lblamt">Amount (e.g. 6+4.5)</label><div class="amt"><input id="amt" autocomplete="off" inputmode="decimal"><button type="button" id="plus" aria-label="Add another amount">+</button></div></div>
       <div><label>Date</label><input id="date" type="date"></div>
@@ -87,19 +84,19 @@ label{font-size:12px;color:var(--mu);display:block;margin:0 0 3px}
     <div class="f"><label>Currency label</label><input id="cur" maxlength="5"></div>
     <div class="row"><button class="p" id="ssave">Save &amp; sync</button><button id="sreset">Re-download all</button></div>
     <div class="msg" id="smsg"></div>
-    <div class="msg">Expense Tracker phone v2.2.0. Entries are saved on this phone first, then synced.</div>
+    <div class="msg">Expense Tracker phone v2.3.0. Entries are saved on this phone first, then synced.</div>
   </details>
 </main>
 <script>
 (function () {
-var VER = '2.2.0', K = 'expense-phone-v1';
+var VER = '2.3.0', K = 'expense-phone-v1';
 var CATS = ['Food', 'Transport', 'Shopping', 'Family', 'Phone', 'Bills', 'Health', 'Other'];
 var S = { url: '', token: '', cur: 'RM', rows: [], seq: 0, lastPush: '', lastSync: '' };
 var $ = function (s) { return document.querySelector(s); };
 function pad(n) { return (n < 10 ? '0' : '') + n; }
 function localDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
 var todayS = localDate(new Date()), ym = todayS.slice(0, 7);
-var editUid = null, pend = null, touched = false, syncing = false, lastTry = 0, queued = false, chipList = [];
+var editUid = null, pend = null, touched = false, syncing = false, lastTry = 0, queued = false;
 
 function stampAfter(old, n) {
   if (old && n <= old) { var t = Date.parse(old); if (!isNaN(t)) n = new Date(t + 1000).toISOString().slice(0, 19) + 'Z'; }
@@ -168,24 +165,6 @@ function render() {
   });
   $('#list').innerHTML = h || '<div class="msg">Nothing here yet.</div>';
 
-  var cnt = Object.create(null);
-  all.forEach(function (r) {
-    if (!r.note) return;
-    var k = r.note.toLowerCase(), c = cnt[k];
-    if (!c) c = cnt[k] = { n: 0, last: r };
-    c.n++;
-    if (r.date > c.last.date || (r.date === c.last.date && r.updated_at >= c.last.updated_at)) c.last = r;
-  });
-  chipList = Object.keys(cnt).filter(function (k) { return cnt[k].n >= 2; }).sort(function (a, b) {
-    return (cnt[b].n - cnt[a].n) || (cnt[a].last.date < cnt[b].last.date ? 1 : (cnt[a].last.date > cnt[b].last.date ? -1 : 0));
-  }).slice(0, 6).map(function (k) { return cnt[k].last; });
-  var cb = $('#chips');
-  cb.style.display = chipList.length ? '' : 'none';
-  cb.innerHTML = chipList.map(function (r, i) {
-    var n = r.note.length > 14 ? r.note.slice(0, 13) + '\u2026' : r.note;
-    return '<button type="button" data-chip="' + i + '">' + esc(n) + ' ' + plain(r.amount_cents) + '</button>';
-  }).join('');
-
   var seen = {}, notes = [];
   all.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).forEach(function (r) {
     if (r.note && !seen[r.note] && notes.length < 40) { seen[r.note] = 1; notes.push(r.note); }
@@ -196,15 +175,6 @@ function render() {
 function calc() {
   var t = $('#amt').value, c = t.indexOf('+') >= 0 ? parseAmt(t) : null;
   $('#lblamt').textContent = c ? 'Amount  =  ' + money(c) : 'Amount (e.g. 6+4.5)';
-}
-function useChip(i) {
-  var r = chipList[i];
-  if (!r) return;
-  if (editUid) { setMsg('Finish or cancel the edit first.', true); return; }
-  $('#note').value = r.note; $('#cat').value = CATS.indexOf(r.category) >= 0 ? r.category : 'Other'; touched = true;
-  $('#amt').value = plain(r.amount_cents); calc();
-  $('#amt').focus(); try { $('#amt').select(); } catch (e) {}
-  setMsg('Filled from your last one. Change the amount if needed, then tap Add.');
 }
 function autofill() {
   var n = $('#note').value.trim().toLowerCase();
@@ -304,9 +274,8 @@ function boot() {
   };
   $('#sreset').onclick = function () { S.seq = 0; S.lastPush = ''; save(); sync(false); };
   document.addEventListener('click', function (e) {
-    var t = e.target.closest ? e.target.closest('[data-del],[data-edit],[data-chip]') : null;
+    var t = e.target.closest ? e.target.closest('[data-del],[data-edit]') : null;
     if (!t) return;
-    if (t.dataset.chip !== undefined) { useChip(+t.dataset.chip); return; }
     if (t.dataset.del) {
       var r = find(t.dataset.del);
       if (pend === t.dataset.del) { if (r) { r.deleted = 1; r.updated_at = stampAfter(r.updated_at, nowIso()); } pend = null; save(); render(); syncSoon(); }
